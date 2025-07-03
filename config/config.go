@@ -4,7 +4,8 @@ package config
 import (
     "bufio"
     "fmt"
-    
+
+    "net"
     "os"
     "strings"
 
@@ -24,11 +25,14 @@ type Upstream struct {
     V6      bool     `yaml:"v6"`
     File    string   `yaml:"file,omitempty"`
     Entries []string `yaml:"-"`
+    Trie    *Trie    `yaml:"-"`
 }
 
 type DefaultConfig struct {
-    ChinaIPCidrsFile string     `yaml:"china_ip_cidrs_file"`
-    Upstreams        []Upstream `yaml:"upstreams"`
+    ChinaIPCidrsFile string       `yaml:"china_ip_cidrs_file"`
+    Domestic         []Upstream   `yaml:"domestic"`
+    Foreign          []Upstream   `yaml:"foreign"`
+    CIDRs            []*net.IPNet `yaml:"-"`
 }
 
 type HostConfig struct {
@@ -80,6 +84,12 @@ func LoadConfig(path string) (*Config, error) {
     if cfg.Forward == nil {
         cfg.Forward = make([]Upstream, 0)
     }
+    if cfg.Default.Domestic == nil {
+        cfg.Default.Domestic = make([]Upstream, 0)
+    }
+    if cfg.Default.Foreign == nil {
+        cfg.Default.Foreign = make([]Upstream, 0)
+    }
 
     // 3. 只有在 file 字段非空时，才真正去加载文件
     if cfg.Host.File != "" {
@@ -108,6 +118,21 @@ func LoadConfig(path string) (*Config, error) {
         } else {
             cfg.Forward[i].Entries = make([]string, 0)
         }
+        trie := NewTrie()
+        for _, entry := range cfg.Forward[i].Entries {
+            trie.Insert(entry)
+        }
+        cfg.Forward[i].Trie = trie
+    }
+
+    if cfg.Default.ChinaIPCidrsFile != "" {
+        cidrs, err := readCIDRs(cfg.Default.ChinaIPCidrsFile)
+        if err != nil {
+            return nil, fmt.Errorf("解析 china_ip_cidrs_file 失败: %w", err)
+        }
+        cfg.Default.CIDRs = cidrs
+    } else {
+        cfg.Default.CIDRs = make([]*net.IPNet, 0)
     }
 
     return &cfg, nil
@@ -168,4 +193,21 @@ func readLines(path string) ([]string, error) {
         return nil, err
     }
     return lines, nil
+}
+
+// readCIDRs parses CIDR blocks from file
+func readCIDRs(path string) ([]*net.IPNet, error) {
+    lines, err := readLines(path)
+    if err != nil {
+        return nil, err
+    }
+    var cidrs []*net.IPNet
+    for _, line := range lines {
+        if _, ipnet, err := net.ParseCIDR(line); err == nil {
+            cidrs = append(cidrs, ipnet)
+        } else {
+            return nil, fmt.Errorf("invalid CIDR %s: %w", line, err)
+        }
+    }
+    return cidrs, nil
 }
